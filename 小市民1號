@@ -1,0 +1,97 @@
+import numpy as np
+import pandas as pd
+import yfinance as yf
+import pandas_ta as ta
+import matplotlib.pyplot as plt
+
+# 下载以太币的数据
+data = yf.download('BTC-USD', start='2022-01-01', end='2024-12-31', interval='1wk')
+
+# 计算RSI指标
+data['RSI'] = ta.rsi(data['Close'], length=2)
+
+# 计算移动平均线
+data['SMA_2'] = data['Close'].rolling(window=2).mean()
+
+# 设置交易信号
+data['Signal'] = 0
+data.loc[(data['RSI'] < 30) & (data['Close'] < data['SMA_2']), 'Signal'] = 1  # 买入信号
+data.loc[(data['RSI'] > 70) & (data['Close'] > data['SMA_2']), 'Signal'] = -1  # 卖出信号
+
+# 初始化持仓和交易记录
+holding = 0
+entry_price = 0
+trades = []
+
+for i, row in data.iterrows():
+    if row['Signal'] == 1 and not holding:  # 买入信号且无持仓
+        holding = 1
+        entry_price = row['Close']
+        trades.append({'Date': i, 'Action': 'Buy', 'Price': row['Close'], 'Quantity': 1})
+    elif holding and (row['Close'] < entry_price * 0.7):  # 检查是否损失超过30%
+        holding = 0
+        trades.append({'Date': i, 'Action': 'Sell', 'Price': row['Close'], 'Quantity': 1, 'Reason': 'Stop Loss -30%'})
+    elif row['Signal'] == -1 and holding:  # 卖出信号且有持仓
+        holding = 0
+        trades.append({'Date': i, 'Action': 'Sell', 'Price': row['Close'], 'Quantity': 1, 'Reason': 'RSI Sell Signal'})
+
+# 创建交易DataFrame
+trade_df = pd.DataFrame(trades)
+trade_df['Date'] = trade_df['Date'].dt.strftime('%Y-%m-%d %H:%M:%S')
+
+# 打印交易记录
+print(trade_df)
+
+# 初始化策略回报率
+strategy_returns = []
+
+# 根据实际成对的交易计算回报率
+for index, trade in trade_df.iterrows():
+    if trade['Action'] == 'Sell':
+        # 找到对应的买入记录
+        buy_trade = trade_df[(trade_df['Date'] < trade['Date']) & (trade_df['Action'] == 'Buy')].iloc[-1]
+        if buy_trade.empty:
+            continue
+        buy_price = buy_trade['Price']
+        sell_price = trade['Price']
+        return_pct = (sell_price - buy_price) / buy_price
+        strategy_returns.append(return_pct)
+
+# 计算累计策略回报率
+cumulative_strategy_return = np.prod([1 + r for r in strategy_returns]) - 1
+
+# 计算最大回撤
+drawdowns = [1 - (1 + r) for r in strategy_returns]
+max_drawdown = min(drawdowns) if drawdowns else 0
+
+# 计算夏普比率
+risk_free_rate = 0.01 / 52  # 假设年化无风险利率为1%，转化为每周
+mean_return = np.mean(strategy_returns) * 52  # 年化平均回报率
+std_return = np.std(strategy_returns) * np.sqrt(52)  # 年化标准差
+sharpe_ratio = (mean_return - risk_free_rate) / std_return if std_return != 0 else 0
+
+# 打印性能指标
+print(f"夏普比率: {sharpe_ratio:.2f}")
+print(f"總报酬率: {cumulative_strategy_return:.2%}")
+print(f"最大回撤率: {max_drawdown:.2%}")
+
+# 可视化
+plt.figure(figsize=(12, 8))
+plt.plot(data['Close'], label='ETH Price', color='gray', alpha=0.8)
+plt.scatter(data.loc[data['Signal'] == 1].index, data['Close'][data['Signal'] == 1], color='green', marker='^', s=100, label='Buy Signal')
+plt.scatter(data.loc[data['Signal'] == -1].index, data['Close'][data['Signal'] == -1], color='red', marker='v', s=100, label='Sell Signal')
+plt.title('Ethereum Trading Signals')
+plt.xlabel('Date')
+plt.ylabel('Price')
+plt.legend()
+plt.grid(True)
+plt.show()
+
+#這個量化交易策略基於相對強弱指數（RSI）和簡單移動平均線（SMA）。
+#當RSI低於30且價格低於SMA時，策略生成買入信號，認為市場可能反彈；
+#當RSI高於70且價格高於SMA時，策略生成賣出信號，認為市場可能回調。
+#若價格下跌超過30%，則觸發止損賣出。
+# 策略計算累積回報率、最大回撤率和夏普比率，評估風險調整後的收益表現，旨在捕捉市場短期波動帶來的交易機會。
+
+###改進1:下跌30%改為每日監控，不是每周監控
+###改進2:交易次數少了點，希望能做到每月2~4次的交易
